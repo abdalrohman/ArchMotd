@@ -1,0 +1,264 @@
+#!/bin/bash
+
+# color
+export LC_MESSAGES=C
+export LANG=C
+BLACK="\e[30m"
+WHITE="\e[37m"
+GREEN="\e[32m"
+BLUE="\e[34m"
+YELLOW="\e[33m"
+RED="\e[31m"
+BOLD="\e[1m"
+RESET="\e[0m"
+
+readonly BN_MAY_NINETEEN=18362
+
+function error() {
+    printf "${BOLD}${RED}Error:${RESET} with %s\n" "$1"
+}
+
+# get uptime
+function get_uptime() {
+    if [[ -e /proc/uptime ]]; then
+        uptime=/proc/uptime
+        days=$(awk '{printf("%d\n",($1 / 60 / 60 / 24))}' ${uptime})
+        hours=$(awk '{printf("%02d",($1 / 60 / 60 % 24))}' ${uptime})
+        minutes=$(awk '{printf("%02d",($1 / 60 % 60))}' ${uptime})
+        seconds=$(awk '{printf("%02d",($1 % 60))}' ${uptime})
+        uptime="${days}d ${hours}h ${minutes}m ${seconds}s"
+        printf "${BOLD}${WHITE}Ubtime:${RESET} %s.\n" "${uptime}"
+    fi
+}
+
+# get wsl version
+function call_build() {
+    build=$("$(interop_prefix)$(sysdrive_prefix)"/Windows/System32/reg.exe query "HKLM\\Software\\Microsoft\\Windows NT\\CurrentVersion" /v CurrentBuild | tail -n 2 | head -n 1 | sed -e 's|\r||g')
+    echo "${build##* }"
+}
+
+function interop_prefix() {
+    win_location="/mnt/"
+    if [ -f /etc/wsl.conf ]; then
+        tmp="$(awk -F '=' '/root/ {print $2}' /etc/wsl.conf | awk '{$1=$1;print}')"
+        [ "$tmp" == "" ] || win_location="$tmp"
+        unset tmp
+    fi
+    echo "$win_location"
+    unset win_location
+}
+
+function sysdrive_prefix() {
+    win_location="$(interop_prefix)"
+    hard_reset=0
+    for pt in $(ls "$win_location"); do
+        if [ $(echo "$pt" | wc -l) -eq 1 ]; then
+            if [ -d "$win_location$pt/Windows/System32" ]; then
+                hard_reset=1
+                win_location="$pt"
+                break
+            fi
+        fi
+    done
+
+    if [ $hard_reset -eq 0 ]; then
+        win_location="c"
+    fi
+
+    echo "$win_location"
+    unset win_location
+    unset hard_reset
+}
+
+function get_wsl_version() {
+    wslutmpbuild="$(($(call_build) + 0))"
+    if [ $wslutmpbuild -ge $BN_MAY_NINETEEN ]; then
+        # The environment variable only available in 19H1 or later.
+        wslu_distro_regpath=$("$(interop_prefix)$(sysdrive_prefix)"/Windows/System32/reg.exe query "HKCU\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Lxss" /s /f DistributionName 2>&1 | grep -B1 -e "$WSL_DISTRO_NAME" | head -n1 | sed -e 's|\r||g')
+        if "$(interop_prefix)$(sysdrive_prefix)"/Windows/System32/reg.exe query "$wslu_distro_regpath" /v Version &>/dev/null; then
+            wslu_distro_version=$("$(interop_prefix)$(sysdrive_prefix)"/Windows/System32/reg.exe query "$wslu_distro_regpath" /v Version | tail -n 2 | head -n 1 | sed -e 's|\r||g')
+            wslu_distro_version=${wslu_distro_version##* }
+            if [ "$wslu_distro_version" != "0x2" ]; then
+                printf "${BOLD}${WHITE}WSL version:${RESET} %s.\n" "1"
+            else
+                printf "${BOLD}${WHITE}WSL version:${RESET} %s.\n" "2"
+            fi
+        else
+            printf "${BOLD}${WHITE}WSL version:${RESET} %s.\n" "1"
+        fi
+    else
+        printf "${BOLD}${WHITE}WSL version:${RESET} %s.\n" "1"
+    fi
+}
+
+# number of pkg installed
+function package_count() {
+    if [ -x /bin/pacman ]; then
+        count_pkg=$(pacman -Qq | wc -l)
+    fi
+    printf "${BOLD}${WHITE}System packages:${RESET} you have ${YELLOW}%s${RESET} installed.\n" "${count_pkg}"
+}
+
+#
+function wsl_distro_name() {
+    WSL_DISTRO_NAME=${WSL_DISTRO_NAME}
+    printf "${BOLD}${WHITE}Wsl distro name:${RESET} %s.\n" "${WSL_DISTRO_NAME}"
+}
+
+# print hostname
+function hostname() {
+    printf "${BOLD}${WHITE}Hostname:${RESET} %s.\n" "${HOSTNAME}"
+}
+
+# print memory info
+function mem_info() {
+    print="echo"
+    if [ -x /bin/free ]; then
+        amount_mem=$(free | awk '/Mem:/{printf("%.1f GB\n",($2 / 1024 / 1024 ))}')
+        usage_mem=$(free | awk '/Mem:/{printf("%.1f %%\n",($3 * 100 / $2 ))}')
+        amount_swap=$(free | awk '/Swap:/{printf("%.1f GB\n",($2 / 1024 / 1024 ))}')
+        usage_swap=$(free | awk '/Swap:/{printf("%.1f %%\n",($3 * 100 / $2 ))}')
+        total_mem=$(free -t | awk '/Total:/{printf("%.1f GB\n",($2 / 1024 / 1024 ))}')
+        total_usage_mem=$(free -t | awk '/Total:/{printf("%.1f %%\n",($3 * 100 / $2 ))}')
+    else
+        error "gathering memory info."
+    fi
+    until [ $# == 0 ]; do
+        case "$1" in
+        -am)
+            ${print} ${amount_mem}
+            ;;
+        -um)
+            ${print} ${usage_mem}
+            ;;
+        -as)
+            ${print} ${amount_swap}
+            ;;
+        -us)
+            ${print} ${usage_swap}
+            ;;
+        -tm)
+            ${print} ${total_mem}
+            ;;
+        -tu)
+            ${print} ${total_usage_mem}
+            ;;
+        esac
+        shift
+    done
+
+}
+
+# print number of processes
+function proc_num() {
+    local user=$(whoami)
+    if [ -x /bin/ps ]; then
+        num_proc=$(ps aux --no-headers | wc -l)
+    else
+        error "gathering processes number."
+    fi
+    printf "${BOLD}${WHITE}Processes:${RESET} %s.\n" "${num_proc}"
+}
+
+# print diskinfo
+function disk_info() {
+    if [ -x /bin/df ]; then
+        mount_point=$(df -BG -x squashfs -x tmpfs -x devtmpfs -x overlay -x 9p --output=target,pcent,size | tail -n+2 | awk '{print $1}')
+        usage=$(df -BG -x squashfs -x tmpfs -x devtmpfs -x overlay -x 9p --output=target,pcent,size | tail -n+2 | awk '{print $2}')
+        size=$(df -BG -x squashfs -x tmpfs -x devtmpfs -x overlay -x 9p --output=target,pcent,size | tail -n+2 | awk '{print $3}')
+    else
+        error "gathering disk info."
+    fi
+    printf "${BOLD}${WHITE}Usage of %s:${RESET} %s of %s\n" "${mount_point}" "${usage}" "${size}"
+}
+
+# print cpu info
+function cpu_info() {
+    print="printf"
+    if [ -x /bin/lscpu ]; then
+        cpu_freq=$(lscpu | awk '/^CPU MHz/{printf("%.2f\n"),($3/1000)}' | sed -e "s/.*: *//")
+        if [ ${cpu_freq} ] >3; then
+            unit="GHz"
+        elif [ ${cpu_freq} ] >1; then
+            unit="MHz"
+        else
+            unit=""
+        fi
+        cpu_cores=$(lscpu | grep "^Core(s) per socket" | sed -e "s/.*: *//")
+        cpu_threads=$(lscpu | grep "^CPU(s)" | sed -e "s/.*: *//")
+        socket=$(lscpu | grep "^Socket(s)" | sed -e "s/.*: *//")
+        cpu_model=$(lscpu | grep "^Model name" | sed -e "s/.*: *//" -e "s/CPU.*//")
+        cpu_family=$(lscpu | grep "^CPU family)" | sed -e "s/.*: *//")
+    elif [ -e /proc/cpuinfo ]; then
+        cpu_model=$(grep -m1 "model name" /proc/cpuinfo | sed -e "s/.*: *//" -e "s/CPU.*//")
+        cpu_freq=$(cat /proc/cpuinfo | awk '/^cpu MHz/{printf "%.2f\n",$4/1000}' | head -1)
+        cpu_cores=$(cat /proc/cpuinfo | awk '/^cpu cores/{printf "%d\n",$4}' | head -1)
+        cpu_threads=$(cat /proc/cpuinfo | awk '/^siblings/{printf "%d\n",$3}' | head -1)
+        cpu_family=$(cat /proc/cpuinfo | awk '/^cpu family/{printf "%d\n",$4}' | head -1)
+    else
+        error "gathering cpu info."
+    fi
+
+    until [ $# == 0 ]; do
+        case "$1" in
+        -f | --freq)
+            ${print} "%s %s" "${cpu_freq}" "${unit}"
+            shift
+            ;;
+        -c | --core)
+            ${print} "${cpu_cores}"
+            shift
+            ;;
+        -t | --thread)
+            ${print} "${cpu_threads}"
+            shift
+            ;;
+        -s | --socket)
+            ${print} "${socket}"
+            shift
+            ;;
+        -m | --model)
+            ${print} "${cpu_model}"
+            shift
+            ;;
+        -fy | --family)
+            ${print} "${cpu_family}"
+            shift
+            ;;
+        esac
+        shift
+    done
+
+}
+
+function get_lsb_info() {
+    [[ -r /etc/lsb-release ]] && source /etc/lsb-release
+    printf "${BOLD}${WHITE}%s%s%s${RESET}" "${DISTRIB_ID} ${DISTRIB_RELEASE} ${DISTRIB_CODENAME}"
+}
+
+function get_kernel_info() {
+    printf "${BOLD}${WHITE}Kernel: ${RESET}%s %s %s\n" "$(uname -s)" "$(uname -r)" "$(uname -m)"
+}
+
+# print info
+echo -e "Welcome to $(get_lsb_info)
+
+    $(get_uptime)\t$(hostname)
+    $(get_wsl_version)\t\t$(wsl_distro_name)
+    $(get_kernel_info)
+
+    ${BOLD}${GREEN}Packages information:${RESET}
+        $(package_count)
+    
+    ${BOLD}${GREEN}Cpu information:${RESET}
+        ${BOLD}${WHITE}Cpu speed:${RESET} $(cpu_info -f).
+        ${BOLD}${WHITE}Cpu name:${RESET} $(cpu_info -m).
+        ${BOLD}${WHITE}Cores:${RESET} $(cpu_info -c).
+        ${BOLD}${WHITE}Threads:${RESET} $(cpu_info -t).
+    
+    ${BOLD}${GREEN}System information $(date):${RESET}
+        $(disk_info).
+        $(proc_num)
+        ${BOLD}${WHITE}Memory usage:${RESET} $(mem_info -um) of $(mem_info -am).
+        ${BOLD}${WHITE}Swap usage:${RESET} $(mem_info -us) of $(mem_info -as).
+        ${BOLD}${WHITE}Total usage:${RESET} $(mem_info -tu) of $(mem_info -tm)."
